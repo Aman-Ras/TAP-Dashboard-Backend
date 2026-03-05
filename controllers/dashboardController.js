@@ -47,7 +47,12 @@ function dateFilter(field, startDate, endDate) {
   if (startDate || endDate) {
     f[field] = {};
     if (startDate) f[field].$gte = new Date(startDate);
-    if (endDate)   f[field].$lte = new Date(endDate);
+    if (endDate) {
+      // Include the full end day (up to 23:59:59)
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      f[field].$lte = end;
+    }
   }
   return f;
 }
@@ -91,7 +96,7 @@ exports.getOverview = async (req, res) => {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const iFilter = { ...positionFilter(position), ...dateFilter('startTime', startDate, endDate) };
+    const iFilter = { ...positionFilter(position), ...dateFilter('createdAt', startDate, endDate) };
     const rFilter = { ...jdPositionFilter(position), ...dateFilter('created_at', startDate, endDate) };
 
     const [
@@ -108,7 +113,7 @@ exports.getOverview = async (req, res) => {
         { $match: iFilter },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]).toArray(),
-      interviews().countDocuments({ ...iFilter, startTime: { $gte: monthStart } }),
+      interviews().countDocuments({ ...iFilter, createdAt: { $gte: monthStart } }),
       resumeTracking().countDocuments(rFilter),
       resumeTracking().aggregate([
         { $match: rFilter },
@@ -143,7 +148,7 @@ exports.getOverview = async (req, res) => {
 exports.getAllRecruiters = async (req, res) => {
   try {
     const { position, startDate, endDate } = req.query;
-    const iFilter = { ...positionFilter(position), ...dateFilter('startTime', startDate, endDate) };
+    const iFilter = { ...positionFilter(position), ...dateFilter('createdAt', startDate, endDate) };
     const rFilter = { ...jdPositionFilter(position), ...dateFilter('created_at', startDate, endDate) };
 
     const [interviewStats, resumeStats] = await Promise.all([
@@ -220,14 +225,14 @@ exports.getRecruiterDetail = async (req, res) => {
     const { email } = req.params;
     const { startDate, endDate, position } = req.query;
 
-    const iBase = { recruiterEmail: email, ...dateFilter('startTime', startDate, endDate), ...positionFilter(position) };
+    const iBase = { recruiterEmail: email, ...dateFilter('createdAt', startDate, endDate), ...positionFilter(position) };
     const rBase = { recruiter_email: email, ...dateFilter('created_at', startDate, endDate), ...jdPositionFilter(position) };
 
     const [interviewList, interviewAgg, weeklyActivity, sessionList, sessionAgg] = await Promise.all([
       interviews().aggregate([
         { $match: iBase },
         ...scoreLookup(),
-        { $sort: { startTime: -1 } },
+        { $sort: { createdAt: -1 } },
       ]).toArray(),
       interviews().aggregate([
         { $match: iBase },
@@ -235,7 +240,7 @@ exports.getRecruiterDetail = async (req, res) => {
       ]).toArray(),
       interviews().aggregate([
         { $match: iBase },
-        { $group: { _id: { $dateToString: { format: '%Y-%U', date: { $ifNull: ['$startTime', '$createdAt'] } } }, count: { $sum: 1 } } },
+        { $group: { _id: { $dateToString: { format: '%Y-%U', date: '$createdAt' } }, count: { $sum: 1 } } },
         { $sort: { _id: 1 } },
       ]).toArray(),
       resumeTracking().find(rBase).sort({ created_at: -1 }).toArray(),
@@ -279,13 +284,13 @@ exports.getCandidates = async (req, res) => {
     const match = { status: 'Completed' };
     if (recruiterEmail) match.recruiterEmail = recruiterEmail;
     Object.assign(match, positionFilter(position));
-    Object.assign(match, dateFilter('startTime', startDate, endDate));
+    Object.assign(match, dateFilter('createdAt', startDate, endDate));
 
     const pipeline = [
       { $match: match },
       ...scoreLookup(),
       ...(minScore ? [{ $match: { score: { $gte: parseInt(minScore, 10) } } }] : []),
-      { $sort: { score: -1, startTime: -1 } },
+      { $sort: { score: -1, createdAt: -1 } },
       { $limit: 500 },
     ];
 
@@ -304,10 +309,10 @@ exports.getInterviews = async (req, res) => {
     const { recruiterEmail, startDate, endDate, position } = req.query;
     const filter = {};
     if (recruiterEmail) filter.recruiterEmail = recruiterEmail;
-    Object.assign(filter, dateFilter('startTime', startDate, endDate));
+    Object.assign(filter, dateFilter('createdAt', startDate, endDate));
     Object.assign(filter, positionFilter(position));
 
-    const list = await interviews().find(filter).sort({ startTime: -1 }).limit(500).toArray();
+    const list = await interviews().find(filter).sort({ createdAt: -1 }).limit(500).toArray();
     res.json(list);
   } catch (err) {
     console.error(err);

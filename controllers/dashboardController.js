@@ -3,6 +3,44 @@ const mongoose = require('mongoose');
 const interviews     = () => mongoose.connection.collection('interviews');
 const resumeTracking = () => mongoose.connection.collection('recruiter_resume_tracking');
 
+// ── Simple in-memory cache ─────────────────────────────────────────────────────
+const cache = new Map();
+function fromCache(key) {
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.ts < 120_000) return hit.data; // 2 min TTL
+  return null;
+}
+function toCache(key, data) { cache.set(key, { ts: Date.now(), data }); }
+
+// Pipeline $lookup — fetches only score + verdict fields (avoids loading 4MB report docs)
+function scoreLookup() {
+  return [
+    { $lookup: {
+        from: 'reports',
+        let: { iid: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $eq: ['$candidate_id', '$$iid'] } } },
+          { $project: { 'report.Final_Overall_Score': 1, 'report.Final_Overall_Verdict': 1 } },
+          { $limit: 1 },
+        ],
+        as: '_report',
+    }},
+    { $unwind: { path: '$_report', preserveNullAndEmptyArrays: true } },
+    { $addFields: {
+        scoreRaw: { $ifNull: ['$_report.report.Final_Overall_Score', null] },
+        verdict:  { $ifNull: ['$_report.report.Final_Overall_Verdict',  null] },
+    }},
+    { $addFields: {
+        score: { $cond: {
+          if: { $and: ['$scoreRaw', { $gt: [{ $strLenCP: { $ifNull: ['$scoreRaw', ''] } }, 0] }] },
+          then: { $toInt: { $arrayElemAt: [{ $split: ['$scoreRaw', '%'] }, 0] } },
+          else: null,
+        }},
+    }},
+    { $project: { _report: 0, scoreRaw: 0, questions: 0, jobDescription: 0, resume: 0, profilePic: 0, candidateAddress: 0, __v: 0 } },
+  ];
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function dateFilter(field, startDate, endDate) {
   const f = {};
@@ -188,20 +226,7 @@ exports.getRecruiterDetail = async (req, res) => {
     const [interviewList, interviewAgg, weeklyActivity, sessionList, sessionAgg] = await Promise.all([
       interviews().aggregate([
         { $match: iBase },
-        { $lookup: { from: 'reports', localField: '_id', foreignField: 'candidate_id', as: '_rep' } },
-        { $unwind: { path: '$_rep', preserveNullAndEmptyArrays: true } },
-        { $addFields: {
-            scoreRaw: { $ifNull: ['$_rep.report.Final_Overall_Score', null] },
-            verdict:  { $ifNull: ['$_rep.report.Final_Overall_Verdict',  null] },
-        }},
-        { $addFields: {
-            score: { $cond: {
-              if: { $and: ['$scoreRaw', { $gt: [{ $strLenCP: { $ifNull: ['$scoreRaw',''] } }, 0] }] },
-              then: { $toInt: { $arrayElemAt: [{ $split: ['$scoreRaw', '%'] }, 0] } },
-              else: null,
-            }},
-        }},
-        { $project: { _rep: 0, scoreRaw: 0, questions: 0, jobDescription: 0, resume: 0, profilePic: 0, candidateAddress: 0, __v: 0 } },
+        ...scoreLookup(),
         { $sort: { startTime: -1 } },
       ]).toArray(),
       interviews().aggregate([
@@ -247,6 +272,10 @@ exports.getCandidates = async (req, res) => {
   try {
     const { recruiterEmail, position, startDate, endDate, minScore } = req.query;
 
+    const cacheKey = `candidates:${JSON.stringify(req.query)}`;
+    const cached = fromCache(cacheKey);
+    if (cached) return res.json(cached);
+
     const match = { status: 'Completed' };
     if (recruiterEmail) match.recruiterEmail = recruiterEmail;
     Object.assign(match, positionFilter(position));
@@ -254,57 +283,14 @@ exports.getCandidates = async (req, res) => {
 
     const pipeline = [
       { $match: match },
-      {
-        $lookup: {
-          from: 'reports',
-          localField: '_id',
-          foreignField: 'candidate_id',
-          as: '_report',
-        },
-      },
-      { $unwind: { path: '$_report', preserveNullAndEmptyArrays: true } },
-      {
-        $addFields: {
-          scoreRaw: { $ifNull: ['$_report.report.Final_Overall_Score', null] },
-          verdict:  { $ifNull: ['$_report.report.Final_Overall_Verdict',  null] },
-        },
-      },
-      {
-        $addFields: {
-          // Parse "48%" → 48
-          score: {
-            $cond: {
-              if: { $and: ['$scoreRaw', { $gt: [{ $strLenCP: '$scoreRaw' }, 0] }] },
-              then: {
-                $toInt: {
-                  $arrayElemAt: [{ $split: ['$scoreRaw', '%'] }, 0],
-                },
-              },
-              else: null,
-            },
-          },
-        },
-      },
-      ...(minScore
-        ? [{ $match: { score: { $gte: parseInt(minScore, 10) } } }]
-        : []),
-      {
-        $project: {
-          _report: 0,
-          scoreRaw: 0,
-          questions: 0,
-          jobDescription: 0,
-          resume: 0,
-          profilePic: 0,
-          candidateAddress: 0,
-          __v: 0,
-        },
-      },
+      ...scoreLookup(),
+      ...(minScore ? [{ $match: { score: { $gte: parseInt(minScore, 10) } } }] : []),
       { $sort: { score: -1, startTime: -1 } },
-      { $limit: 1000 },
+      { $limit: 500 },
     ];
 
     const candidates = await interviews().aggregate(pipeline).toArray();
+    toCache(cacheKey, candidates);
     res.json(candidates);
   } catch (err) {
     console.error(err);

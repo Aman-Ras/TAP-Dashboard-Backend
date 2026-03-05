@@ -11,6 +11,7 @@ app.use(express.json());
 
 app.use('/api/dashboard', dashboardRoutes);
 
+app.get('/', (req, res) => res.json({ status: 'ok', message: 'Recruiter Dashboard API is running', endpoints: '/api/dashboard' }));
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 module.exports = app;

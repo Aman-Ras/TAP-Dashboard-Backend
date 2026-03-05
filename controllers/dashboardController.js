@@ -186,7 +186,24 @@ exports.getRecruiterDetail = async (req, res) => {
     const rBase = { recruiter_email: email, ...dateFilter('created_at', startDate, endDate), ...jdPositionFilter(position) };
 
     const [interviewList, interviewAgg, weeklyActivity, sessionList, sessionAgg] = await Promise.all([
-      interviews().find(iBase).sort({ startTime: -1 }).toArray(),
+      interviews().aggregate([
+        { $match: iBase },
+        { $lookup: { from: 'reports', localField: '_id', foreignField: 'candidate_id', as: '_rep' } },
+        { $unwind: { path: '$_rep', preserveNullAndEmptyArrays: true } },
+        { $addFields: {
+            scoreRaw: { $ifNull: ['$_rep.report.Final_Overall_Score', null] },
+            verdict:  { $ifNull: ['$_rep.report.Final_Overall_Verdict',  null] },
+        }},
+        { $addFields: {
+            score: { $cond: {
+              if: { $and: ['$scoreRaw', { $gt: [{ $strLenCP: { $ifNull: ['$scoreRaw',''] } }, 0] }] },
+              then: { $toInt: { $arrayElemAt: [{ $split: ['$scoreRaw', '%'] }, 0] } },
+              else: null,
+            }},
+        }},
+        { $project: { _rep: 0, scoreRaw: 0, questions: 0, jobDescription: 0, resume: 0, profilePic: 0, candidateAddress: 0, __v: 0 } },
+        { $sort: { startTime: -1 } },
+      ]).toArray(),
       interviews().aggregate([
         { $match: iBase },
         { $group: { _id: '$status', count: { $sum: 1 } } },
@@ -219,6 +236,76 @@ exports.getRecruiterDetail = async (req, res) => {
       },
       weeklyActivity: weeklyActivity.map((w) => ({ week: w._id, count: w.count })),
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ── GET /api/dashboard/candidates ────────────────────────────────────────────
+exports.getCandidates = async (req, res) => {
+  try {
+    const { recruiterEmail, position, startDate, endDate, minScore } = req.query;
+
+    const match = { status: 'Completed' };
+    if (recruiterEmail) match.recruiterEmail = recruiterEmail;
+    Object.assign(match, positionFilter(position));
+    Object.assign(match, dateFilter('startTime', startDate, endDate));
+
+    const pipeline = [
+      { $match: match },
+      {
+        $lookup: {
+          from: 'reports',
+          localField: '_id',
+          foreignField: 'candidate_id',
+          as: '_report',
+        },
+      },
+      { $unwind: { path: '$_report', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          scoreRaw: { $ifNull: ['$_report.report.Final_Overall_Score', null] },
+          verdict:  { $ifNull: ['$_report.report.Final_Overall_Verdict',  null] },
+        },
+      },
+      {
+        $addFields: {
+          // Parse "48%" → 48
+          score: {
+            $cond: {
+              if: { $and: ['$scoreRaw', { $gt: [{ $strLenCP: '$scoreRaw' }, 0] }] },
+              then: {
+                $toInt: {
+                  $arrayElemAt: [{ $split: ['$scoreRaw', '%'] }, 0],
+                },
+              },
+              else: null,
+            },
+          },
+        },
+      },
+      ...(minScore
+        ? [{ $match: { score: { $gte: parseInt(minScore, 10) } } }]
+        : []),
+      {
+        $project: {
+          _report: 0,
+          scoreRaw: 0,
+          questions: 0,
+          jobDescription: 0,
+          resume: 0,
+          profilePic: 0,
+          candidateAddress: 0,
+          __v: 0,
+        },
+      },
+      { $sort: { score: -1, startTime: -1 } },
+      { $limit: 1000 },
+    ];
+
+    const candidates = await interviews().aggregate(pipeline).toArray();
+    res.json(candidates);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

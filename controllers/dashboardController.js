@@ -337,7 +337,6 @@ exports.getResumeSessions = async (req, res) => {
     if (recruiterEmail) filter.recruiter_email = recruiterEmail;
     Object.assign(filter, dateFilter('created_at', startDate, endDate));
     Object.assign(filter, jdPositionFilter(position));
-
     const list = await resumeTracking().find(filter).sort({ created_at: -1 }).limit(500).toArray();
     res.json(list);
   } catch (err) {

@@ -11,18 +11,23 @@ router.get('/interviews', ctrl.getInterviews);
 router.get('/resume-sessions', ctrl.getResumeSessions);
 router.get('/comparison', ctrl.getComparison);
 
-if (process.env.NODE_ENV !== 'production') {
-  const { runReportNow } = require('../jobs/dailyReportJob');
+const { runReportNow } = require('../jobs/dailyReportJob');
 
-  // POST /api/dashboard/debug/trigger-report  — manually fire the email job
-  router.post('/debug/trigger-report', async (req, res) => {
-    try {
-      await runReportNow();
-      res.json({ ok: true, message: 'Report job completed. Check your email.' });
-    } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
-    }
-  });
+// POST /api/dashboard/trigger-report — protected by CRON_SECRET, works in all envs
+router.post('/trigger-report', async (req, res) => {
+  const secret = req.headers['x-cron-secret'] || req.query.secret;
+  if (!secret || secret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  try {
+    await runReportNow();
+    res.json({ ok: true, message: 'Report job completed. Check your email.' });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+if (process.env.NODE_ENV !== 'production') {
 
   // GET /api/dashboard/debug/preview-report  — stream PDF to browser for layout check
   router.get('/debug/preview-report', async (req, res) => {

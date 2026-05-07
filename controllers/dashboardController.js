@@ -41,6 +41,11 @@ function scoreLookup() {
   ];
 }
 
+// Emails excluded from all dashboard views and reports
+const EXCLUDED_EMAILS = ['admin_recruitment@elementtechnologies.com'];
+function iExclude() { return EXCLUDED_EMAILS.length ? { recruiterEmail: { $nin: EXCLUDED_EMAILS } } : {}; }
+function rExclude() { return EXCLUDED_EMAILS.length ? { recruiter_email: { $nin: EXCLUDED_EMAILS } } : {}; }
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function dateFilter(field, startDate, endDate) {
   const f = {};
@@ -89,130 +94,245 @@ exports.getPositions = async (req, res) => {
   }
 };
 
+// ── Pure data function — reused by HTTP handler and daily report job ──────────
+exports.fetchOverviewData = async (startDate = null, endDate = null, position = null) => {
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const iDateCond = {};
+  if (startDate || endDate) {
+    iDateCond.createdAt = {};
+    if (startDate) iDateCond.createdAt.$gte = startDate;
+    if (endDate)   iDateCond.createdAt.$lte = endDate;
+  }
+  const rDateCond = {};
+  if (startDate || endDate) {
+    rDateCond.created_at = {};
+    if (startDate) rDateCond.created_at.$gte = startDate;
+    if (endDate)   rDateCond.created_at.$lte = endDate;
+  }
+
+  const iFilter = { ...positionFilter(position), ...iDateCond, ...iExclude() };
+  const rFilter = { ...jdPositionFilter(position), ...rDateCond, ...rExclude() };
+
+  const [
+    totalInterviews,
+    byStatus,
+    thisMonthInterviews,
+    totalResumeSessions,
+    resumeAgg,
+    interviewEmails,
+    resumeEmails,
+  ] = await Promise.all([
+    interviews().countDocuments(iFilter),
+    interviews().aggregate([
+      { $match: iFilter },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]).toArray(),
+    interviews().countDocuments({ ...iFilter, createdAt: { $gte: monthStart } }),
+    resumeTracking().countDocuments(rFilter),
+    resumeTracking().aggregate([
+      { $match: rFilter },
+      { $group: { _id: null, totalResumesProcessed: { $sum: '$total_resumes_uploaded' }, totalPassed: { $sum: '$resumes_passed_threshold' } } },
+    ]).toArray(),
+    interviews().distinct('recruiterEmail', iFilter),
+    resumeTracking().distinct('recruiter_email', rFilter),
+  ]);
+
+  const allEmails = new Set([
+    ...interviewEmails.filter(Boolean),
+    ...resumeEmails.filter(Boolean),
+  ]);
+  const resumeTotals = resumeAgg[0] || { totalResumesProcessed: 0, totalPassed: 0 };
+
+  return {
+    totalInterviews,
+    byStatus: byStatus.reduce((acc, { _id, count }) => { acc[_id || 'Unknown'] = count; return acc; }, {}),
+    thisMonthInterviews,
+    totalResumeSessions,
+    totalResumesProcessed: resumeTotals.totalResumesProcessed,
+    totalPassed: resumeTotals.totalPassed,
+    activeRecruiters: allEmails.size,
+  };
+};
+
 // ── GET /api/dashboard/overview ───────────────────────────────────────────────
 exports.getOverview = async (req, res) => {
   try {
     const { position, startDate, endDate } = req.query;
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-
-    const iFilter = { ...positionFilter(position), ...dateFilter('createdAt', startDate, endDate) };
-    const rFilter = { ...jdPositionFilter(position), ...dateFilter('created_at', startDate, endDate) };
-
-    const [
-      totalInterviews,
-      byStatus,
-      thisMonthInterviews,
-      totalResumeSessions,
-      resumeAgg,
-      interviewEmails,
-      resumeEmails,
-    ] = await Promise.all([
-      interviews().countDocuments(iFilter),
-      interviews().aggregate([
-        { $match: iFilter },
-        { $group: { _id: '$status', count: { $sum: 1 } } },
-      ]).toArray(),
-      interviews().countDocuments({ ...iFilter, createdAt: { $gte: monthStart } }),
-      resumeTracking().countDocuments(rFilter),
-      resumeTracking().aggregate([
-        { $match: rFilter },
-        { $group: { _id: null, totalResumesProcessed: { $sum: '$total_resumes_uploaded' }, totalPassed: { $sum: '$resumes_passed_threshold' } } },
-      ]).toArray(),
-      interviews().distinct('recruiterEmail', iFilter),
-      resumeTracking().distinct('recruiter_email', rFilter),
-    ]);
-
-    const allEmails = new Set([
-      ...interviewEmails.filter(Boolean),
-      ...resumeEmails.filter(Boolean),
-    ]);
-    const resumeTotals = resumeAgg[0] || { totalResumesProcessed: 0, totalPassed: 0 };
-
-    res.json({
-      totalInterviews,
-      byStatus: byStatus.reduce((acc, { _id, count }) => { acc[_id || 'Unknown'] = count; return acc; }, {}),
-      thisMonthInterviews,
-      totalResumeSessions,
-      totalResumesProcessed: resumeTotals.totalResumesProcessed,
-      totalPassed: resumeTotals.totalPassed,
-      activeRecruiters: allEmails.size,
-    });
+    let start = startDate ? new Date(startDate) : null;
+    let end   = endDate   ? new Date(endDate)   : null;
+    if (end) end.setHours(23, 59, 59, 999);
+    const data = await exports.fetchOverviewData(start, end, position || null);
+    res.json(data);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 };
 
+// ── Pure data function — reused by HTTP handler and daily report job ──────────
+exports.fetchRecruitersData = async (startDate = null, endDate = null, position = null) => {
+  const iDateCond = {};
+  if (startDate || endDate) {
+    iDateCond.createdAt = {};
+    if (startDate) iDateCond.createdAt.$gte = startDate;
+    if (endDate)   iDateCond.createdAt.$lte = endDate;
+  }
+  const rDateCond = {};
+  if (startDate || endDate) {
+    rDateCond.created_at = {};
+    if (startDate) rDateCond.created_at.$gte = startDate;
+    if (endDate)   rDateCond.created_at.$lte = endDate;
+  }
+
+  const iFilter = { ...positionFilter(position), ...iDateCond, ...iExclude() };
+  const rFilter = { ...jdPositionFilter(position), ...rDateCond, ...rExclude() };
+
+  const [interviewStats, resumeStats] = await Promise.all([
+    interviews().aggregate([
+      { $match: iFilter },
+      {
+        $group: {
+          _id: '$recruiterEmail',
+          recruiter: { $first: '$recruiter' },
+          totalInterviews: { $sum: 1 },
+          completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
+          scheduled: { $sum: { $cond: [{ $eq: ['$status', 'Scheduled'] }, 1, 0] } },
+          cancelled: { $sum: { $cond: [{ $eq: ['$status', 'Cancelled'] }, 1, 0] } },
+          lastActivity: { $max: '$createdAt' },
+          positions: { $addToSet: '$applyFor' },
+        },
+      },
+      { $sort: { totalInterviews: -1 } },
+    ]).toArray(),
+    resumeTracking().aggregate([
+      { $match: rFilter },
+      {
+        $group: {
+          _id: '$recruiter_email',
+          recruiterName: { $first: '$recruiter_name' },
+          totalSessions: { $sum: 1 },
+          totalResumes: { $sum: '$total_resumes_uploaded' },
+          totalPassed: { $sum: '$resumes_passed_threshold' },
+          lastActivity: { $max: '$updated_at' },
+          positions: { $addToSet: '$jd_position' },
+        },
+      },
+    ]).toArray(),
+  ]);
+
+  const map = {};
+  for (const s of interviewStats) {
+    const email = s._id;
+    if (!email) continue;
+    map[email] = {
+      email,
+      name: s.recruiter || email,
+      totalInterviews: s.totalInterviews,
+      completed: s.completed,
+      scheduled: s.scheduled,
+      cancelled: s.cancelled,
+      totalSessions: 0, totalResumes: 0, totalPassed: 0, passRate: 0,
+      completionRate: s.totalInterviews ? Math.round((s.completed / s.totalInterviews) * 100) : 0,
+      lastActive: s.lastActivity,
+      positions: (s.positions || []).filter(Boolean),
+    };
+  }
+  for (const s of resumeStats) {
+    const email = s._id;
+    if (!email) continue;
+    if (!map[email]) {
+      map[email] = { email, name: s.recruiterName || email, totalInterviews: 0, completed: 0, scheduled: 0, cancelled: 0, completionRate: 0, lastActive: s.lastActivity, positions: [] };
+    }
+    map[email].totalSessions = s.totalSessions;
+    map[email].totalResumes  = s.totalResumes;
+    map[email].totalPassed   = s.totalPassed;
+    map[email].passRate       = s.totalResumes ? Math.round((s.totalPassed / s.totalResumes) * 100) : 0;
+    if (s.recruiterName) map[email].name = s.recruiterName;
+    if (!map[email].lastActive || (s.lastActivity && s.lastActivity > map[email].lastActive)) map[email].lastActive = s.lastActivity;
+    const rPos = (s.positions || []).filter(Boolean);
+    map[email].positions = [...new Set([...(map[email].positions || []), ...rPos])];
+  }
+
+  return Object.values(map);
+};
+
+// ── Detailed data for daily PDF report (individual interviews + resume positions) ─
+exports.fetchDetailedRecruitersData = async (startDate = null, endDate = null) => {
+  const iDateCond = {};
+  if (startDate || endDate) {
+    iDateCond.createdAt = {};
+    if (startDate) iDateCond.createdAt.$gte = startDate;
+    if (endDate)   iDateCond.createdAt.$lte = endDate;
+  }
+  const rDateCond = {};
+  if (startDate || endDate) {
+    rDateCond.created_at = {};
+    if (startDate) rDateCond.created_at.$gte = startDate;
+    if (endDate)   rDateCond.created_at.$lte = endDate;
+  }
+
+  const [allInterviews, resumeSessions] = await Promise.all([
+    interviews().aggregate([
+      { $match: { ...iDateCond, ...iExclude() } },
+      ...scoreLookup(),
+      { $sort: { recruiterEmail: 1, createdAt: 1 } },
+    ]).toArray(),
+    resumeTracking().aggregate([
+      { $match: { ...rDateCond, ...rExclude() } },
+      {
+        $group: {
+          _id: { recruiterEmail: '$recruiter_email', position: '$jd_position' },
+          recruiterName: { $first: '$recruiter_name' },
+          totalResumes: { $sum: '$total_resumes_uploaded' },
+        },
+      },
+      { $sort: { '_id.recruiterEmail': 1, totalResumes: -1 } },
+    ]).toArray(),
+  ]);
+
+  const map = {};
+
+  for (const iv of allInterviews) {
+    const email = iv.recruiterEmail;
+    if (!email) continue;
+    if (!map[email]) {
+      map[email] = { name: iv.recruiter || email, email, interviews: [], resumePositions: [], totalResumes: 0 };
+    }
+    map[email].interviews.push({
+      candidateName: iv.candidateName || iv.candidateEmail || 'Unknown',
+      position:      iv.applyFor || '—',
+      score:         iv.score != null ? iv.score : null,
+      status:        iv.status || '—',
+    });
+  }
+
+  for (const s of resumeSessions) {
+    const email = s._id.recruiterEmail;
+    if (!email) continue;
+    if (!map[email]) {
+      map[email] = { name: s.recruiterName || email, email, interviews: [], resumePositions: [], totalResumes: 0 };
+    }
+    if (s.recruiterName) map[email].name = s.recruiterName;
+    map[email].resumePositions.push({ position: s._id.position || '—', count: s.totalResumes });
+    map[email].totalResumes += s.totalResumes;
+  }
+
+  return Object.values(map)
+    .filter((r) => r.interviews.length > 0 || r.totalResumes > 0)
+    .sort((a, b) => (b.interviews.length + b.totalResumes) - (a.interviews.length + a.totalResumes));
+};
+
 // ── GET /api/dashboard/recruiters ─────────────────────────────────────────────
 exports.getAllRecruiters = async (req, res) => {
   try {
     const { position, startDate, endDate } = req.query;
-    const iFilter = { ...positionFilter(position), ...dateFilter('createdAt', startDate, endDate) };
-    const rFilter = { ...jdPositionFilter(position), ...dateFilter('created_at', startDate, endDate) };
-
-    const [interviewStats, resumeStats] = await Promise.all([
-      interviews().aggregate([
-        { $match: iFilter },
-        {
-          $group: {
-            _id: '$recruiterEmail',
-            recruiter: { $first: '$recruiter' },
-            totalInterviews: { $sum: 1 },
-            completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
-            scheduled: { $sum: { $cond: [{ $eq: ['$status', 'Scheduled'] }, 1, 0] } },
-            cancelled: { $sum: { $cond: [{ $eq: ['$status', 'Cancelled'] }, 1, 0] } },
-            lastActivity: { $max: '$createdAt' },
-          },
-        },
-        { $sort: { totalInterviews: -1 } },
-      ]).toArray(),
-      resumeTracking().aggregate([
-        { $match: rFilter },
-        {
-          $group: {
-            _id: '$recruiter_email',
-            recruiterName: { $first: '$recruiter_name' },
-            totalSessions: { $sum: 1 },
-            totalResumes: { $sum: '$total_resumes_uploaded' },
-            totalPassed: { $sum: '$resumes_passed_threshold' },
-            lastActivity: { $max: '$updated_at' },
-          },
-        },
-      ]).toArray(),
-    ]);
-
-    const map = {};
-    for (const s of interviewStats) {
-      const email = s._id;
-      if (!email) continue;
-      map[email] = {
-        email,
-        name: s.recruiter || email,
-        totalInterviews: s.totalInterviews,
-        completed: s.completed,
-        scheduled: s.scheduled,
-        cancelled: s.cancelled,
-        totalSessions: 0, totalResumes: 0, totalPassed: 0, passRate: 0,
-        completionRate: s.totalInterviews ? Math.round((s.completed / s.totalInterviews) * 100) : 0,
-        lastActive: s.lastActivity,
-      };
-    }
-    for (const s of resumeStats) {
-      const email = s._id;
-      if (!email) continue;
-      if (!map[email]) {
-        map[email] = { email, name: s.recruiterName || email, totalInterviews: 0, completed: 0, scheduled: 0, cancelled: 0, completionRate: 0, lastActive: s.lastActivity };
-      }
-      map[email].totalSessions = s.totalSessions;
-      map[email].totalResumes  = s.totalResumes;
-      map[email].totalPassed   = s.totalPassed;
-      map[email].passRate       = s.totalResumes ? Math.round((s.totalPassed / s.totalResumes) * 100) : 0;
-      if (s.recruiterName) map[email].name = s.recruiterName;
-      if (!map[email].lastActive || (s.lastActivity && s.lastActivity > map[email].lastActive)) map[email].lastActive = s.lastActivity;
-    }
-
-    res.json(Object.values(map));
+    let start = startDate ? new Date(startDate) : null;
+    let end   = endDate   ? new Date(endDate)   : null;
+    if (end) end.setHours(23, 59, 59, 999);
+    const recruiters = await exports.fetchRecruitersData(start, end, position || null);
+    res.json(recruiters);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -281,7 +401,7 @@ exports.getCandidates = async (req, res) => {
     const cached = fromCache(cacheKey);
     if (cached) return res.json(cached);
 
-    const match = { status: 'Completed' };
+    const match = { status: 'Completed', ...iExclude() };
     if (recruiterEmail) match.recruiterEmail = recruiterEmail;
     Object.assign(match, positionFilter(position));
     Object.assign(match, dateFilter('createdAt', startDate, endDate));
@@ -307,7 +427,7 @@ exports.getCandidates = async (req, res) => {
 exports.getInterviews = async (req, res) => {
   try {
     const { recruiterEmail, startDate, endDate, position } = req.query;
-    const filter = {};
+    const filter = { ...iExclude() };
     if (recruiterEmail) filter.recruiterEmail = recruiterEmail;
     Object.assign(filter, dateFilter('createdAt', startDate, endDate));
     Object.assign(filter, positionFilter(position));
@@ -324,7 +444,7 @@ exports.getInterviews = async (req, res) => {
 exports.getResumeSessions = async (req, res) => {
   try {
     const { recruiterEmail, startDate, endDate, position } = req.query;
-    const filter = {};
+    const filter = { ...rExclude() };
     if (recruiterEmail) filter.recruiter_email = recruiterEmail;
     Object.assign(filter, dateFilter('created_at', startDate, endDate));
     Object.assign(filter, jdPositionFilter(position));
@@ -340,8 +460,8 @@ exports.getResumeSessions = async (req, res) => {
 exports.getComparison = async (req, res) => {
   try {
     const { position } = req.query;
-    const iFilter = { ...positionFilter(position) };
-    const rFilter = { ...jdPositionFilter(position) };
+    const iFilter = { ...positionFilter(position), ...iExclude() };
+    const rFilter = { ...jdPositionFilter(position), ...rExclude() };
 
     const [interviewStats, resumeStats] = await Promise.all([
       interviews().aggregate([

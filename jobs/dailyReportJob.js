@@ -62,7 +62,7 @@ async function runReportNow() {
 
 function startDailyReportJob() {
   cron.schedule(
-    '5 12 * * *',
+    '30 12 * * *',
     async () => {
       try {
         await runReportNow();

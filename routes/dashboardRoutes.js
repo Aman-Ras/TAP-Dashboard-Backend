@@ -47,7 +47,7 @@ if (process.env.NODE_ENV !== 'production') {
         fetchDetailedRecruitersData(startIST, endIST),
       ]);
 
-      const pdfBuffer = await generateDailyReport({ reportDate, overview, recruiters });
+      const pdfBuffer = await generateDailyReport({ reportDate, overview, recruiters, generatedAt: nowUTC });
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', 'inline; filename="preview-report.pdf"');
       res.send(pdfBuffer);

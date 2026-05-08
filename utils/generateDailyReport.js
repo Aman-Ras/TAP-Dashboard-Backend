@@ -28,7 +28,7 @@ function initials(name) {
   return name.split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase();
 }
 
-async function generateDailyReport({ reportDate, overview, recruiters }) {
+async function generateDailyReport({ reportDate, overview, recruiters, generatedAt }) {
   const doc = new PDFDocument({ autoFirstPage: false, margin: 0, size: 'A4' });
   const bufs = [];
   doc.on('data', (c) => bufs.push(c));
@@ -98,10 +98,13 @@ async function generateDailyReport({ reportDate, overview, recruiters }) {
     // Date + time badge (top-right, inside navy)
     const bdgW = 114, bdgX = pageW - m - bdgW;
     doc.roundedRect(bdgX, 14, bdgW, 16, 8).fill('#122870');
-    doc.fillColor('#93C5FD').fontSize(7.5).font('Helvetica-Bold')
-      .text(reportDate, bdgX, 18, { width: bdgW, align: 'center', lineBreak: false });
+    doc.fillColor(C.white).fontSize(9).font('Helvetica-Bold')
+      .text(reportDate, bdgX, 17, { width: bdgW, align: 'center', lineBreak: false });
+    const genTime = (generatedAt || new Date()).toLocaleTimeString('en-IN', {
+      hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata',
+    });
     doc.fillColor('#5E8FC8').fontSize(6.5).font('Helvetica')
-      .text('Generated at 10:00 PM IST', bdgX, 35, { width: bdgW, align: 'center', lineBreak: false });
+      .text(`Generated at ${genTime} IST`, bdgX, 35, { width: bdgW, align: 'center', lineBreak: false });
 
     // Blue accent line below header
     doc.rect(0, HEADER_H, pageW, 3).fill(C.blue);
@@ -113,7 +116,7 @@ async function generateDailyReport({ reportDate, overview, recruiters }) {
 
     const summaryItems = [
       { label: 'INTERVIEWS TODAY',  value: String(overview.totalInterviews),       color: C.blue,   barColor: '#DBEAFE' },
-      { label: 'RESUMES UPLOADED',  value: String(overview.totalResumesProcessed), color: C.green,  barColor: '#DCFCE7' },
+      { label: 'SCREENED',           value: String(overview.totalResumesProcessed), color: C.green,  barColor: '#DCFCE7' },
       { label: 'ACTIVE RECRUITERS', value: String(overview.activeRecruiters),      color: C.orange, barColor: '#FEF3C7' },
     ];
 
@@ -209,7 +212,7 @@ async function generateDailyReport({ reportDate, overview, recruiters }) {
         .text(String(r.interviews.length), badgeX, y + 15, { width: 65, align: 'center', lineBreak: false });
 
       doc.fillColor(C.muted).fontSize(6.5).font('Helvetica-Bold')
-        .text('RESUMES', badgeX + 70, y + 6, { width: 65, align: 'center', lineBreak: false });
+        .text('SCREENED', badgeX + 70, y + 6, { width: 65, align: 'center', lineBreak: false });
       doc.fillColor(C.green).fontSize(11).font('Helvetica-Bold')
         .text(String(r.totalResumes), badgeX + 70, y + 15, { width: 65, align: 'center', lineBreak: false });
 
@@ -269,13 +272,13 @@ async function generateDailyReport({ reportDate, overview, recruiters }) {
         // Section label
         doc.rect(m + 4, y, cW - 4, SEC_H).fill(C.rvBg);
         doc.fillColor(C.green).fontSize(7).font('Helvetica-Bold')
-          .text(`RESUME MATCHING TODAY — ${r.totalResumes} resumes`,
+          .text(`SCREENED TODAY — ${r.totalResumes} screened`,
             m + 10, y + 4, { lineBreak: false });
         y += SEC_H;
 
         // Table header
         doc.rect(m + 4, y, cW - 4, TH_H).fill('#D1FAE5');
-        const rHeaders = ['Position', 'Resumes Uploaded'];
+        const rHeaders = ['Position', 'Screened'];
         cx = m + 4;
         rHeaders.forEach((h, hi) => {
           doc.fillColor(C.navy).fontSize(6.5).font('Helvetica-Bold')

@@ -44,7 +44,7 @@ async function runReportNow() {
   console.log(`[DailyReport] Overview: interviews=${overview.totalInterviews} resumes=${overview.totalResumesProcessed} active=${overview.activeRecruiters}`);
   console.log(`[DailyReport] Active recruiters today: ${recruiters.length}`);
 
-  const pdfBuffer = await generateDailyReport({ reportDate, overview, recruiters });
+  const pdfBuffer = await generateDailyReport({ reportDate, overview, recruiters, generatedAt: now });
   console.log(`[DailyReport] PDF generated (${pdfBuffer.length} bytes)`);
 
   await sendDailyReport({

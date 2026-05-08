@@ -62,7 +62,7 @@ async function runReportNow() {
 
 function startDailyReportJob() {
   cron.schedule(
-    '30 13 * * *',
+    '0 16 * * *',
     async () => {
       try {
         await runReportNow();
@@ -73,7 +73,7 @@ function startDailyReportJob() {
     { scheduled: true, timezone: 'Asia/Kolkata' }
   );
 
-  console.log('[DailyReport] Cron job registered — fires daily at 13:30 IST (TEST)');
+  console.log('[DailyReport] Cron job registered — fires daily at 16:00 IST (TEST)');
 }
 
 module.exports = { startDailyReportJob, runReportNow };
